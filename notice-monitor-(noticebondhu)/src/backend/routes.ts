@@ -9,99 +9,77 @@ import { scraper } from './scraper.js';
 import { scheduler } from './scheduler.js';
 import { notifier } from './notifier.js';
 import { WebsiteCategory } from './types.js';
+import {
+  ADMIN_SESSION_COOKIE,
+  assertSafeUrl,
+  createAdminSessionToken,
+  getCookie,
+  isAuthorizedSubscriber,
+  verifyAdminSessionToken
+} from './security.js';
 
 export const apiRouter = express.Router();
-apiRouter.use(express.json());
+apiRouter.use(express.json({ limit: '32kb' }));
 
-// Password middleware for admin routes
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : (req.headers['x-admin-password'] as string);
-
-  if (token && token === ADMIN_PASSWORD) {
-    return next();
-  }
-  return res.status(401).json({ error: 'Unauthorized. Invalid admin password.' });
+function getAdminConfig(): { password: string; sessionSecret: string } | null {
+  const password = process.env.ADMIN_PASSWORD;
+  const sessionSecret = process.env.ADMIN_SESSION_SECRET;
+  if (!password || !sessionSecret || sessionSecret.length < 32) return null;
+  return { password, sessionSecret };
 }
 
-// Rate limiter store: Map<ip, timestamp[]>
-const ipTestRateLimitMap = new Map<string, number[]>();
+function adminSessionCookie(token: string, maxAge = ADMIN_SESSION_MAX_AGE_SECONDS): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${ADMIN_SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/api/admin; Max-Age=${maxAge}${secure}`;
+}
 
-function checkIpTestRateLimit(ip: string): boolean {
+function hasValidAdminSession(req: Request): boolean {
+  const config = getAdminConfig();
+  const token = getCookie(req.headers.cookie, ADMIN_SESSION_COOKIE);
+  return !!config && verifyAdminSessionToken(token, config.sessionSecret);
+}
+
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (hasValidAdminSession(req)) return next();
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
+const rateLimitBuckets = new Map<string, number[]>();
+
+function toPublicWebsite(website: ReturnType<typeof db.getWebsites>[number]) {
+  const {
+    selector,
+    creatorEmail,
+    lastCheckError,
+    fetchMode,
+    tavilyExtractUrl,
+    ...publicFields
+  } = website;
+  return publicFields;
+}
+
+function checkRateLimit(key: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
-  const windowMs = 60 * 60 * 1000; // 1 hour
-  const limit = 10; // max 10 requests per hour
-
-  let timestamps = ipTestRateLimitMap.get(ip) || [];
+  if (rateLimitBuckets.size > 10_000) {
+    for (const [bucketKey, bucket] of rateLimitBuckets) {
+      const active = bucket.filter(timestamp => now - timestamp < windowMs);
+      if (active.length === 0) rateLimitBuckets.delete(bucketKey);
+      else rateLimitBuckets.set(bucketKey, active);
+    }
+  }
+  let timestamps = rateLimitBuckets.get(key) || [];
   timestamps = timestamps.filter(t => now - t < windowMs);
 
   if (timestamps.length >= limit) {
-    ipTestRateLimitMap.set(ip, timestamps);
+    rateLimitBuckets.set(key, timestamps);
     return false;
   }
 
   timestamps.push(now);
-  ipTestRateLimitMap.set(ip, timestamps);
+  rateLimitBuckets.set(key, timestamps);
   return true;
-}
-
-// SSRF URL validator
-function validateSafeUrl(rawUrl: string): { valid: boolean; error?: string; url?: string } {
-  try {
-    const parsed = new URL(rawUrl.trim());
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return { valid: false, error: 'শুধুমাত্র http এবং https প্রোটোকল অনুমোদিত (Only http and https are allowed)' };
-    }
-
-    const host = parsed.hostname.toLowerCase();
-
-    // Block localhost, local domains, metadata endpoints
-    if (
-      host === 'localhost' ||
-      host.endsWith('.localhost') ||
-      host.endsWith('.local') ||
-      host.endsWith('.internal') ||
-      host === 'metadata.google.internal' ||
-      host === '0.0.0.0'
-    ) {
-      return { valid: false, error: 'লোকালহোস্ট বা প্রাইভেট ডোমেইন অনুমোদিত নয় (Private/local domains blocked for SSRF protection)' };
-    }
-
-    // Check IPv4 private ranges
-    const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-    const match = host.match(ipv4Regex);
-    if (match) {
-      const b0 = parseInt(match[1], 10);
-      const b1 = parseInt(match[2], 10);
-
-      // 127.0.0.0/8
-      if (b0 === 127) return { valid: false, error: 'Loopback IP block (127.x.x.x) is not allowed' };
-      // 10.0.0.0/8
-      if (b0 === 10) return { valid: false, error: 'Private IP block (10.x.x.x) is not allowed' };
-      // 172.16.0.0/12 (172.16 - 172.31)
-      if (b0 === 172 && b1 >= 16 && b1 <= 31) return { valid: false, error: 'Private IP block (172.16-31.x.x) is not allowed' };
-      // 192.168.0.0/16
-      if (b0 === 192 && b1 === 168) return { valid: false, error: 'Private IP block (192.168.x.x) is not allowed' };
-      // 169.254.0.0/16 (Link-local/Cloud Metadata)
-      if (b0 === 169 && b1 === 254) return { valid: false, error: 'Link-local/Metadata IP is not allowed' };
-      // 0.0.0.0/8
-      if (b0 === 0) return { valid: false, error: 'Invalid IP address' };
-    }
-
-    // Check IPv6 loopback and unique local
-    if (host.includes(':') || host.startsWith('[')) {
-      const cleanIpv6 = host.replace(/^\[|\]$/g, '');
-      if (cleanIpv6 === '::1' || cleanIpv6 === '::' || cleanIpv6.startsWith('fc') || cleanIpv6.startsWith('fd') || cleanIpv6.startsWith('fe80')) {
-        return { valid: false, error: 'Private or loopback IPv6 addresses are not permitted' };
-      }
-    }
-
-    return { valid: true, url: parsed.href };
-  } catch {
-    return { valid: false, error: 'সঠিক URL ফরম্যাট প্রদান করুন (Invalid URL format)' };
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -138,8 +116,7 @@ apiRouter.get('/websites', (req, res) => {
     websites = websites.filter(w => w.category === category);
   }
 
-  // Hide selector from public view
-  const sanitized = websites.map(({ selector, ...rest }) => rest);
+  const sanitized = websites.map(toPublicWebsite);
   res.json(sanitized);
 });
 
@@ -148,8 +125,8 @@ apiRouter.get('/websites', (req, res) => {
  */
 apiRouter.post('/websites/test', async (req, res) => {
   try {
-    const rawIp = req.headers['x-forwarded-for']?.toString().split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
-    if (!checkIpTestRateLimit(rawIp)) {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`website-test:${clientIp}`, 10, 60 * 60 * 1000)) {
       return res.status(429).json({
         error: 'ঘণ্টায় সর্বোচ্চ ১০ বার টেস্ট রিকোয়েস্ট করা যাবে। কিছুক্ষণ পর আবার চেষ্টা করুন। (Rate limit exceeded: max 10 tests/hr)'
       });
@@ -160,15 +137,11 @@ apiRouter.post('/websites/test', async (req, res) => {
       return res.status(400).json({ error: 'ওয়েবসাইটের URL দিন (URL is required)' });
     }
 
-    const safe = validateSafeUrl(url);
-    if (!safe.valid) {
-      return res.status(400).json({ error: safe.error });
-    }
-
-    const result = await scraper.autoDetectNotices(safe.url!, selector, !!isJsHeavy);
+    const safeUrl = await assertSafeUrl(url);
+    const result = await scraper.autoDetectNotices(safeUrl.href, selector, !!isJsHeavy);
     return res.json(result);
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Auto-detection failed' });
+  } catch {
+    return res.status(400).json({ error: 'URL could not be safely fetched' });
   }
 });
 
@@ -177,7 +150,12 @@ apiRouter.post('/websites/test', async (req, res) => {
  */
 apiRouter.post('/websites/custom', async (req, res) => {
   try {
-    const { name, nameBn, url, category, intervalMinutes, email, telegramChatId, selector, isJsHeavy } = req.body;
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`website-custom:${clientIp}`, 5, 60 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Too many custom website submissions' });
+    }
+
+    const { name, nameBn, url, category, intervalMinutes, email, selector, isJsHeavy } = req.body;
 
     if (!name || !url || !email) {
       return res.status(400).json({ error: 'নাম, নোটিশ পেজের URL এবং ইমেইল বাধ্যতামূলক (Name, URL, and Email are required)' });
@@ -187,10 +165,7 @@ apiRouter.post('/websites/custom', async (req, res) => {
       return res.status(400).json({ error: 'সঠিক ইমেইল ঠিকানা দিন (Valid email is required)' });
     }
 
-    const safe = validateSafeUrl(url);
-    if (!safe.valid) {
-      return res.status(400).json({ error: safe.error });
-    }
+    const safeUrl = await assertSafeUrl(url);
 
     // Rate limit: max 5 custom websites per email
     const customCount = db.getCustomWebsitesCountByEmail(email);
@@ -201,35 +176,35 @@ apiRouter.post('/websites/custom', async (req, res) => {
     }
 
     // Duplicate check: normalize URL
-    const existingSite = db.getWebsiteByUrl(safe.url!);
+    const existingSite = db.getWebsiteByUrl(safeUrl.href);
     if (existingSite) {
       // Auto-subscribe user to existing website
       db.subscribe({
         name: name || 'শিক্ষার্থী',
         email,
-        telegramChatId,
-        websiteIds: [existingSite.id]
+        websiteIds: [existingSite.id],
+        ownershipToken: req.body.ownershipToken
       });
 
       return res.json({
         success: true,
         isExisting: true,
         message: 'এই ওয়েবসাইটটি ইতোমধ্যে মনিটর করা হচ্ছে! আপনাকে স্বয়ংক্রিয়ভাবে এতে সাবস্ক্রাইব করা হয়েছে।',
-        website: existingSite
+        website: toPublicWebsite(existingSite)
       });
     }
 
     // Determine selector: use provided, or run quick auto-detect
     let finalSelector = selector?.trim();
     if (!finalSelector) {
-      const autoRes = await scraper.autoDetectNotices(safe.url!, undefined, !!isJsHeavy);
+      const autoRes = await scraper.autoDetectNotices(safeUrl.href, undefined, !!isJsHeavy);
       finalSelector = autoRes.selector || 'table tr td a, .notices a, a[href*="notice"]';
     }
 
     const newSite = db.addWebsite({
       name: name.trim(),
       nameBn: nameBn?.trim() || name.trim(),
-      url: safe.url!,
+      url: safeUrl.href,
       selector: finalSelector,
       category: (category as WebsiteCategory) || 'college',
       intervalMinutes: Number(intervalMinutes) || 60,
@@ -237,7 +212,6 @@ apiRouter.post('/websites/custom', async (req, res) => {
       isJsHeavy: !!isJsHeavy,
       isCustom: true,
       creatorEmail: email.trim().toLowerCase(),
-      creatorTelegramChatId: telegramChatId?.trim() || undefined,
       totalNoticesFound: 0
     });
 
@@ -245,7 +219,6 @@ apiRouter.post('/websites/custom', async (req, res) => {
     db.subscribe({
       name: name.trim(),
       email: email.trim(),
-      telegramChatId: telegramChatId?.trim() || undefined,
       websiteIds: [newSite.id]
     });
 
@@ -261,10 +234,14 @@ apiRouter.post('/websites/custom', async (req, res) => {
       message: isPending
         ? 'আপনার কাস্টম ওয়েবসাইটটি সফলভাবে জমা দেওয়া হয়েছে! এডমিন পর্যালোচনার পর সক্রিয় হবে।'
         : 'আপনার ওয়েবসাইটটি সফলভাবে যোগ করা হয়েছে এবং আপনি এতে সাবস্ক্রাইব হয়েছেন!',
-      website: newSite
+      website: toPublicWebsite(newSite)
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to add custom website' });
+    if (err?.message === 'OWNERSHIP_TOKEN_REQUIRED') {
+      return res.status(403).json({ error: 'Ownership token required to change an existing subscription' });
+    }
+    console.error('[Routes] Custom website submission failed:', err);
+    return res.status(400).json({ error: 'Failed to add custom website' });
   }
 });
 
@@ -294,7 +271,12 @@ apiRouter.get('/notices', (req, res) => {
  */
 apiRouter.post('/subscribe', async (req, res) => {
   try {
-    const { name, email, telegramChatId, websiteIds } = req.body;
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`subscribe:${clientIp}`, 10, 60 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Too many subscription requests' });
+    }
+
+    const { name, email, websiteIds, ownershipToken } = req.body;
 
     if (!email || !email.includes('@')) {
       return res.status(400).json({ error: 'সঠিক ইমেইল ঠিকানা দিন (Valid email is required)' });
@@ -307,14 +289,13 @@ apiRouter.post('/subscribe', async (req, res) => {
     const { subscriber, subscribedCount, isNew } = db.subscribe({
       name: name || 'শিক্ষার্থী',
       email,
-      telegramChatId,
-      websiteIds
+      websiteIds,
+      ownershipToken
     });
 
-    // Send a welcome alert / confirmation if telegram ID is given
-    if (telegramChatId) {
-      notifier.testTelegram(telegramChatId).catch(err => {
-        console.warn('[Routes] Welcome telegram ping notice:', err);
+    if (isNew) {
+      notifier.sendSubscriptionWelcome(subscriber).catch(err => {
+        console.error('[Routes] Failed to send subscription management email:', err);
       });
     }
 
@@ -326,13 +307,16 @@ apiRouter.post('/subscribe', async (req, res) => {
       subscriber: {
         id: subscriber.id,
         name: subscriber.name,
-        email: subscriber.email,
-        telegramChatId: subscriber.telegramChatId
+        email: subscriber.email
       },
       subscribedCount
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Subscription failed' });
+    if (err?.message === 'OWNERSHIP_TOKEN_REQUIRED') {
+      return res.status(403).json({ error: 'Ownership token required to change an existing subscription' });
+    }
+    console.error('[Routes] Subscription failed:', err);
+    res.status(500).json({ error: 'Subscription failed' });
   }
 });
 
@@ -340,14 +324,13 @@ apiRouter.post('/subscribe', async (req, res) => {
  * Unsubscribe student
  */
 apiRouter.post('/unsubscribe', (req, res) => {
-  const { email, token, websiteId } = req.body;
-  const identifier = token || email;
+  const { token, websiteId } = req.body;
 
-  if (!identifier) {
-    return res.status(400).json({ error: 'Email or token is required to unsubscribe' });
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ error: 'A valid unsubscribe token is required' });
   }
 
-  const result = db.unsubscribe(identifier, websiteId);
+  const result = db.unsubscribe(token, websiteId);
   if (!result.success) {
     return res.status(404).json({ error: result.message });
   }
@@ -363,11 +346,32 @@ apiRouter.post('/unsubscribe', (req, res) => {
  * Admin Login
  */
 apiRouter.post('/admin/login', (req, res) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(`admin-login:${clientIp}`, 10, 15 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+  }
+
+  const config = getAdminConfig();
+  if (!config) {
+    return res.status(503).json({ error: 'Admin authentication is not configured' });
+  }
+
   const { password } = req.body;
-  if (password === ADMIN_PASSWORD) {
-    return res.json({ success: true, token: ADMIN_PASSWORD });
+  if (typeof password === 'string' && isAuthorizedSubscriber(config.password, password)) {
+    const token = createAdminSessionToken(config.sessionSecret);
+    res.setHeader('Set-Cookie', adminSessionCookie(token));
+    return res.json({ success: true });
   }
   return res.status(401).json({ error: 'ভুল এডমিন পাসওয়ার্ড (Incorrect admin password)' });
+});
+
+apiRouter.get('/admin/session', (req, res) => {
+  res.json({ authenticated: hasValidAdminSession(req) });
+});
+
+apiRouter.post('/admin/logout', (_req, res) => {
+  res.setHeader('Set-Cookie', adminSessionCookie('', 0));
+  res.json({ success: true });
 });
 
 /**
@@ -388,10 +392,11 @@ apiRouter.post('/admin/websites', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Name, URL, and CSS Selector are required' });
     }
 
+    const safeUrl = await assertSafeUrl(url);
     const newSite = db.addWebsite({
       name,
       nameBn: nameBn || name,
-      url,
+      url: safeUrl.href,
       selector,
       category: (category as WebsiteCategory) || 'board',
       intervalMinutes: Number(intervalMinutes) || 60,
@@ -406,23 +411,38 @@ apiRouter.post('/admin/websites', requireAdmin, async (req, res) => {
     });
 
     res.status(201).json({ success: true, website: newSite });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    console.error('[Routes] Admin website creation failed:', err);
+    res.status(400).json({ error: 'Invalid website configuration' });
   }
 });
 
 /**
  * Update an existing website
  */
-apiRouter.put('/admin/websites/:id', requireAdmin, (req, res) => {
-  const { id } = req.params;
-  const updated = db.updateWebsite(id, req.body);
+apiRouter.put('/admin/websites/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = db.getWebsiteById(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Website not found' });
+    }
 
-  if (!updated) {
-    return res.status(404).json({ error: 'Website not found' });
+    const updates = {
+      name: typeof req.body.name === 'string' ? req.body.name.trim() : existing.name,
+      nameBn: typeof req.body.nameBn === 'string' ? req.body.nameBn.trim() : existing.nameBn,
+      url: req.body.url ? (await assertSafeUrl(req.body.url)).href : existing.url,
+      selector: typeof req.body.selector === 'string' ? req.body.selector.trim() : existing.selector,
+      category: req.body.category || existing.category,
+      intervalMinutes: Number(req.body.intervalMinutes) || existing.intervalMinutes,
+      enabled: typeof req.body.enabled === 'boolean' ? req.body.enabled : existing.enabled,
+      isJsHeavy: typeof req.body.isJsHeavy === 'boolean' ? req.body.isJsHeavy : existing.isJsHeavy
+    };
+    const updated = db.updateWebsite(id, updates);
+    res.json({ success: true, website: updated });
+  } catch {
+    res.status(400).json({ error: 'Invalid website configuration' });
   }
-
-  res.json({ success: true, website: updated });
 });
 
 /**
@@ -436,7 +456,10 @@ apiRouter.get('/admin/settings', requireAdmin, (_req, res) => {
  * Update admin system settings
  */
 apiRouter.put('/admin/settings', requireAdmin, (req, res) => {
-  const updated = db.updateSettings(req.body);
+  if (typeof req.body.requireCustomApproval !== 'boolean') {
+    return res.status(400).json({ error: 'requireCustomApproval must be a boolean' });
+  }
+  const updated = db.updateSettings({ requireCustomApproval: req.body.requireCustomApproval });
   res.json({ success: true, settings: updated });
 });
 
@@ -559,19 +582,6 @@ apiRouter.get('/admin/logs', requireAdmin, (_req, res) => {
  */
 apiRouter.get('/admin/subscribers', requireAdmin, (_req, res) => {
   res.json(db.getSubscribers());
-});
-
-/**
- * Test Telegram bot connection
- */
-apiRouter.post('/admin/test-telegram', requireAdmin, async (req, res) => {
-  const { chatId } = req.body;
-  if (!chatId) {
-    return res.status(400).json({ error: 'Telegram Chat ID is required' });
-  }
-
-  const result = await notifier.testTelegram(chatId);
-  res.json(result);
 });
 
 // -----------------------------------------------------------------------------

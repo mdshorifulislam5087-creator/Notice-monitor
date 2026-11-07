@@ -5,8 +5,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Website, Notice, Subscriber, Subscription, AlertLog, CheckLog, SystemStats, AdminSettings } from './types.js';
-import { SEED_WEBSITES, SEED_NOTICES } from './seed.js';
+import { reconcileManagedWebsites, SEED_WEBSITES, SEED_NOTICES } from './seed.js';
+import { isAuthorizedSubscriber } from './security.js';
 
 interface DatabaseSchema {
   websites: Website[];
@@ -18,7 +20,14 @@ interface DatabaseSchema {
   settings?: AdminSettings;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+type LegacyWebsite = Website & { creatorTelegramChatId?: string };
+type LegacySubscriber = Subscriber & { telegramChatId?: string };
+type LegacyAlertLog = Omit<AlertLog, 'channel'> & {
+  channel: 'email' | 'telegram';
+  telegramChatId?: string;
+};
+
+const DATA_DIR = path.resolve(process.env.NOTICEBONDHU_DATA_DIR || path.join(process.cwd(), 'data'));
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 class DatabaseService {
@@ -60,80 +69,19 @@ class DatabaseService {
         // Seed with initial sample websites and notices
         this.data.websites = [...SEED_WEBSITES];
         this.data.notices = [...SEED_NOTICES];
-        this.data.subscribers = [
-          {
-            id: 'sub-demo-1',
-            name: 'রাফি আহমেদ (Rafi Ahmed)',
-            email: 'rafi.student.bd@gmail.com',
-            telegramChatId: '123456789',
-            isActive: true,
-            createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(),
-            unsubToken: 'demo-token-123'
-          }
-        ];
-        this.data.subscriptions = [
-          {
-            id: 'sub-link-1',
-            subscriberId: 'sub-demo-1',
-            websiteId: 'dhaka-education-board',
-            createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString()
-          },
-          {
-            id: 'sub-link-2',
-            subscriberId: 'sub-demo-1',
-            websiteId: 'national-university-bd',
-            createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString()
-          }
-        ];
-        this.data.alert_logs = [
-          {
-            id: 'alert-sample-1',
-            subscriberId: 'sub-demo-1',
-            subscriberEmail: 'rafi.student.bd@gmail.com',
-            telegramChatId: '123456789',
-            noticeId: 'notice-deb-2026-01',
-            noticeTitle: '২০২৬ সালের এইচএসসি পরীক্ষার ফরম পূরণের বর্ধিত সময়সূচি সংক্রান্ত জরুরি বিজ্ঞপ্তি',
-            websiteName: 'Board of Intermediate and Secondary Education, Dhaka',
-            channel: 'telegram',
-            status: 'sent',
-            sentAt: new Date(Date.now() - 1000 * 60 * 40).toISOString()
-          },
-          {
-            id: 'alert-sample-2',
-            subscriberId: 'sub-demo-1',
-            subscriberEmail: 'rafi.student.bd@gmail.com',
-            noticeId: 'notice-deb-2026-01',
-            noticeTitle: '২০২৬ সালের এইচএসসি পরীক্ষার ফরম পূরণের বর্ধিত সময়সূচি সংক্রান্ত জরুরি বিজ্ঞপ্তি',
-            websiteName: 'Board of Intermediate and Secondary Education, Dhaka',
-            channel: 'email',
-            status: 'sent',
-            sentAt: new Date(Date.now() - 1000 * 60 * 39).toISOString()
-          }
-        ];
-        this.data.check_logs = [
-          {
-            id: 'chk-sample-1',
-            websiteId: 'dhaka-education-board',
-            websiteName: 'Board of Intermediate and Secondary Education, Dhaka',
-            status: 'success',
-            noticesFound: 5,
-            newNoticesCount: 1,
-            durationMs: 412,
-            checkedAt: new Date(Date.now() - 1000 * 60 * 12).toISOString()
-          },
-          {
-            id: 'chk-sample-2',
-            websiteId: 'national-university-bd',
-            websiteName: 'National University Bangladesh',
-            status: 'success',
-            noticesFound: 4,
-            newNoticesCount: 0,
-            durationMs: 530,
-            checkedAt: new Date(Date.now() - 1000 * 60 * 35).toISOString()
-          }
-        ];
+        this.data.subscribers = [];
+        this.data.subscriptions = [];
+        this.data.alert_logs = [];
+        this.data.check_logs = [];
         this.save();
       }
+      this.data.websites = reconcileManagedWebsites(this.data.websites);
+      this.data.websites = (this.data.websites as LegacyWebsite[]).map(({ creatorTelegramChatId, ...website }) => website);
+      this.data.subscribers = (this.data.subscribers as LegacySubscriber[]).map(({ telegramChatId, ...subscriber }) => subscriber);
+      this.data.alert_logs = (this.data.alert_logs as LegacyAlertLog[])
+        .filter(log => log.channel === 'email')
+        .map(({ telegramChatId, ...log }) => log as AlertLog);
+      this.save();
       this.isLoaded = true;
     } catch (err) {
       console.error('[DB] Failed to initialize file storage:', err);
@@ -290,11 +238,10 @@ class DatabaseService {
     };
   }
 
-  public hasNotice(websiteId: string, link: string, title: string): boolean {
+  public hasNotice(websiteId: string, link: string): boolean {
     const normLink = link.trim().toLowerCase();
-    const normTitle = title.trim().toLowerCase();
     return this.data.notices.some(
-      n => n.websiteId === websiteId && (n.link.trim().toLowerCase() === normLink || n.title.trim().toLowerCase() === normTitle)
+      n => n.websiteId === websiteId && n.link.trim().toLowerCase() === normLink
     );
   }
 
@@ -310,13 +257,14 @@ class DatabaseService {
   }
 
   // --- Subscribers & Subscriptions ---
-  public getSubscribers(): (Subscriber & { subscribedWebsites: string[] })[] {
+  public getSubscribers(): (Omit<Subscriber, 'unsubToken'> & { subscribedWebsites: string[] })[] {
     return this.data.subscribers.map(sub => {
       const siteIds = this.data.subscriptions
         .filter(s => s.subscriberId === sub.id)
         .map(s => s.websiteId);
+      const { unsubToken, ...publicSubscriber } = sub;
       return {
-        ...sub,
+        ...publicSubscriber,
         subscribedWebsites: siteIds
       };
     });
@@ -333,8 +281,8 @@ class DatabaseService {
   public subscribe(payload: {
     name: string;
     email: string;
-    telegramChatId?: string;
     websiteIds: string[];
+    ownershipToken?: string;
   }): { subscriber: Subscriber; subscribedCount: number; isNew: boolean } {
     const cleanEmail = payload.email.trim().toLowerCase();
     let subscriber = this.getSubscriberByEmail(cleanEmail);
@@ -343,22 +291,21 @@ class DatabaseService {
     if (!subscriber) {
       isNew = true;
       subscriber = {
-        id: `sub-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: `sub-${randomUUID()}`,
         name: payload.name.trim(),
         email: cleanEmail,
-        telegramChatId: payload.telegramChatId?.trim() || undefined,
         isActive: true,
         createdAt: new Date().toISOString(),
-        unsubToken: `unsub-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`
+        unsubToken: randomBytes(32).toString('base64url')
       };
       this.data.subscribers.push(subscriber);
     } else {
+      if (!isAuthorizedSubscriber(subscriber.unsubToken, payload.ownershipToken)) {
+        throw new Error('OWNERSHIP_TOKEN_REQUIRED');
+      }
       // update existing
       subscriber.name = payload.name.trim() || subscriber.name;
       subscriber.isActive = true;
-      if (payload.telegramChatId) {
-        subscriber.telegramChatId = payload.telegramChatId.trim();
-      }
     }
 
     // Remove old subscriptions for this subscriber
@@ -368,7 +315,7 @@ class DatabaseService {
     for (const siteId of payload.websiteIds) {
       if (this.data.websites.some(w => w.id === siteId)) {
         this.data.subscriptions.push({
-          id: `subs-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          id: `subs-${randomUUID()}`,
           subscriberId: subscriber.id,
           websiteId: siteId,
           createdAt: new Date().toISOString()
@@ -381,10 +328,8 @@ class DatabaseService {
     return { subscriber, subscribedCount: count, isNew };
   }
 
-  public unsubscribe(emailOrToken: string, websiteId?: string): { success: boolean; message: string } {
-    const subscriber = this.data.subscribers.find(
-      s => s.email.toLowerCase() === emailOrToken.toLowerCase() || s.unsubToken === emailOrToken
-    );
+  public unsubscribe(token: string, websiteId?: string): { success: boolean; message: string } {
+    const subscriber = this.getSubscriberByUnsubToken(token);
 
     if (!subscriber) {
       return { success: false, message: 'Subscriber not found' };

@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Shield, Key, Plus, Trash2, Edit, RefreshCw, CheckCircle2, XCircle, AlertCircle,
-  Play, Send, Clock, Globe, ListFilter, Users, Zap, Check, Eye
+  Play, Clock, Globe, ListFilter, Users, Zap, Check, Eye
 } from 'lucide-react';
 import {
   Language, WebsiteAdmin, SystemStats, CheckLogItem, AlertLogItem, SubscriberItem, WebsiteCategory
@@ -21,7 +21,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
   const t = translations[lang];
 
   const [password, setPassword] = useState('');
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('noticebondhu_admin_token'));
+  const [token, setToken] = useState<string | null | undefined>(undefined);
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<'websites' | 'logs' | 'subscribers' | 'testing'>('websites');
@@ -51,8 +51,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
   // Testing & Simulation states
   const [simWebsiteId, setSimWebsiteId] = useState('');
   const [simTitle, setSimTitle] = useState('');
-  const [testTelegramChatId, setTestTelegramChatId] = useState('');
-  const [testTelegramResult, setTestTelegramResult] = useState<string | null>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,15 +63,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Login failed');
-      localStorage.setItem('noticebondhu_admin_token', data.token);
-      setToken(data.token);
+      setToken('cookie-session');
     } catch (err: any) {
       setAuthError(err.message || 'Login failed');
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('noticebondhu_admin_token');
+  const handleLogout = async () => {
+    await fetch('/api/admin/logout', { method: 'POST' }).catch(() => undefined);
     setToken(null);
     setPassword('');
   };
@@ -85,14 +82,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     if (!token) return;
     setLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${token}` };
-
       const [resStats, resWebsites, resLogs, resSubs, resSettings] = await Promise.all([
         fetch('/api/stats'),
-        fetch('/api/admin/websites', { headers }),
-        fetch('/api/admin/logs', { headers }),
-        fetch('/api/admin/subscribers', { headers }),
-        fetch('/api/admin/settings', { headers })
+        fetch('/api/admin/websites'),
+        fetch('/api/admin/logs'),
+        fetch('/api/admin/subscribers'),
+        fetch('/api/admin/settings')
       ]);
 
       if (resWebsites.status === 401) {
@@ -126,8 +121,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
       const res = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ requireCustomApproval: newSetting })
       });
@@ -150,7 +144,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     try {
       const res = await fetch(`/api/admin/websites/${id}/approve`, {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         showNotification(`Approved ${name}`);
@@ -166,7 +159,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     try {
       const res = await fetch(`/api/admin/websites/${id}/reject`, {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         showNotification(`Disabled/Rejected ${name}`);
@@ -178,9 +170,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
   };
 
   useEffect(() => {
-    if (token) {
-      fetchData();
-    }
+    fetch('/api/admin/session')
+      .then(res => res.json())
+      .then(data => setToken(data.authenticated ? 'cookie-session' : null))
+      .catch(() => setToken(null));
+  }, []);
+
+  useEffect(() => {
+    if (token) fetchData();
   }, [token]);
 
   const showNotification = (msg: string) => {
@@ -194,7 +191,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     try {
       const res = await fetch('/api/admin/scrape-all', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
       showNotification(`Scrape completed across ${data.results?.length || 0} websites!`);
@@ -211,7 +207,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     try {
       const res = await fetch(`/api/admin/websites/${siteId}/check`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
       showNotification(
@@ -230,7 +225,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     try {
       const res = await fetch(`/api/admin/websites/${id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         showNotification(`Deleted ${name}`);
@@ -282,8 +276,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
         const res = await fetch('/api/admin/websites', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(formData)
         });
@@ -296,8 +289,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
         const res = await fetch(`/api/admin/websites/${editingId}`, {
           method: 'PUT',
           headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(formData)
         });
@@ -321,8 +313,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
       const res = await fetch('/api/admin/simulate-notice', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           websiteId: simWebsiteId,
@@ -339,26 +330,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
     }
   };
 
-  const handleTestTelegram = async () => {
-    if (!token || !testTelegramChatId) return;
-    try {
-      const res = await fetch('/api/admin/test-telegram', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ chatId: testTelegramChatId })
-      });
-      const data = await res.json();
-      setTestTelegramResult(data.message || 'Test sent');
-      await fetchData();
-    } catch (err: any) {
-      setTestTelegramResult(`Error: ${err.message}`);
-    }
-  };
-
   // Login Screen
+  if (token === undefined) {
+    return <div className="py-20 text-center text-sm text-slate-500">Checking admin session…</div>;
+  }
+
   if (!token) {
     return (
       <div className="py-20 max-w-md mx-auto px-4">
@@ -382,6 +358,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
           )}
 
           <form onSubmit={handleLogin} className="space-y-4">
+            <input
+              type="text"
+              name="username"
+              value="admin"
+              autoComplete="username"
+              readOnly
+              aria-hidden="true"
+              tabIndex={-1}
+              className="sr-only"
+            />
             <div className="text-left">
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5">
                 {t.adminPasswordLabel}
@@ -390,10 +376,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
                 <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   type="password"
+                  autoComplete="current-password"
                   required
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder="admin123"
+                  placeholder="••••••••••••"
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
                 />
               </div>
@@ -798,7 +785,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
                   {alertLogs.slice(0, 20).map(log => (
                     <tr key={log.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
                       <td className="p-3.5 font-bold uppercase">{log.channel}</td>
-                      <td className="p-3.5 font-mono">{log.telegramChatId || log.subscriberEmail}</td>
+                      <td className="p-3.5 font-mono">{log.subscriberEmail}</td>
                       <td className="p-3.5 max-w-xs truncate">{log.noticeTitle}</td>
                       <td className="p-3.5">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
@@ -830,7 +817,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
                 <tr>
                   <th className="p-3">Name</th>
                   <th className="p-3">Email</th>
-                  <th className="p-3">Telegram Chat ID</th>
                   <th className="p-3">Portals Subscribed</th>
                   <th className="p-3">Status</th>
                   <th className="p-3">Joined</th>
@@ -841,7 +827,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
                   <tr key={sub.id}>
                     <td className="p-3 font-semibold">{sub.name}</td>
                     <td className="p-3 font-mono">{sub.email}</td>
-                    <td className="p-3 font-mono text-slate-500">{sub.telegramChatId || '—'}</td>
                     <td className="p-3 font-bold text-emerald-600">{sub.subscribedWebsites.length} portals</td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${sub.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
@@ -859,7 +844,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
 
       {/* TAB 4: ALERT TESTING & SIMULATION */}
       {activeTab === 'testing' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="max-w-2xl">
           {/* Simulate Notice */}
           <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
             <div className="flex items-center gap-2">
@@ -910,45 +895,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ lang }) => {
             </button>
           </div>
 
-          {/* Test Telegram Direct Ping */}
-          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-            <div className="flex items-center gap-2">
-              <Send className="w-5 h-5 text-sky-500" />
-              <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                Test Telegram Bot Connection
-              </h2>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Send an instant verification message to your Telegram Chat ID using the configured TELEGRAM_BOT_TOKEN.
-            </p>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                Your Telegram Chat ID
-              </label>
-              <input
-                type="text"
-                value={testTelegramChatId}
-                onChange={e => setTestTelegramChatId(e.target.value)}
-                placeholder="e.g. 123456789"
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono text-xs"
-              />
-            </div>
-
-            <button
-              onClick={handleTestTelegram}
-              disabled={!testTelegramChatId}
-              className="w-full py-2.5 rounded-xl font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-40 cursor-pointer text-xs"
-            >
-              Send Test Telegram Ping 📲
-            </button>
-
-            {testTelegramResult && (
-              <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-mono">
-                {testTelegramResult}
-              </div>
-            )}
-          </div>
         </div>
       )}
 

@@ -1,20 +1,20 @@
 # Notice Monitor (NoticeBondhu - নোটিশবন্ধু) 🇧🇩
 
-> **Automated Notice Scraper & Multi-Channel Alert Sentinel for Bangladeshi Students**  
-> Automatically detects new notices on college, education board, and government websites, and pushes instant notifications to subscribers via **Telegram** and **Email**.
+> **Automated Notice Monitor & Email Alert System for Bangladeshi Students**
+> Automatically detects new notices on college, education board, and government websites, then sends SMTP email alerts to subscribers.
 
 ---
 
 ## 🌟 Features
 
-- **Robotic Web Scraper**: Built with `cheerio` & `axios` with polite User-Agents, custom CSS selectors, automatic relative-to-absolute URL conversion, and rate limiting.
+- **Tavily Notice Extraction**: Uses Tavily Extract on each exact source page to monitor All Notice, MRIST, BTEB, and DUET every hour.
+- **Custom-site Scraper**: User-submitted notice pages still use the SSRF-protected Cheerio/axios detector with custom CSS selectors.
 - **Diff & New Notice Isolation**: Detects genuine new circulars and avoids sending duplicate alerts or spamming baseline existing notices on initial runs.
-- **Telegram Bot API**: Push notifications directly to students' Telegram mobile/desktop app with formatted HTML messages and direct PDF links.
 - **Nodemailer SMTP**: Responsive HTML emails in Bangla and English containing official notice details and a secure 1-click unsubscribe link.
 - **Admin Control Suite**:
   - Add / edit / delete monitored websites (name, URL, selector, 15m/1h/6h intervals, toggle).
   - Live scraper test trigger and immediate manual check.
-  - "Simulate Notice" button to test Telegram and Email delivery pipeline end-to-end.
+  - "Simulate Notice" button to test the email delivery pipeline end-to-end.
   - Comprehensive audit logs (scrape checks, duration, alert delivery logs, subscribers).
 - **Bangla + English Support**: Default Bangla with instant toggle switch and Hind Siliguri typography.
 - **Dark & Light Mode**: Auto-persisted theme.
@@ -28,11 +28,12 @@
 ├── /src
 │   ├── /backend             # Backend services & scraper engine
 │   │   ├── types.ts         # Data models (Website, Notice, Subscriber, Logs)
-│   │   ├── db.ts            # Persistent database layer (Firestore compatible)
+│   │   ├── db.ts            # Local JSON persistence layer
 │   │   ├── seed.ts          # Seed data with Bangladeshi educational boards & universities
-│   │   ├── scraper.ts       # Cheerio scraper with fallback & error handling
+│   │   ├── tavily.ts       # Exact-page Tavily Extract client
+│   │   ├── scraper.ts       # Tavily/direct collection, diffing, persistence, alerts
 │   │   ├── scheduler.ts     # node-cron scheduler for periodic checks
-│   │   ├── notifier.ts      # Telegram Bot API & Nodemailer email dispatcher
+│   │   ├── notifier.ts      # Nodemailer SMTP email dispatcher
 │   │   └── routes.ts        # Express REST API routes (/api/*)
 │   ├── /frontend            # React frontend UI
 │   │   ├── types.ts         # Frontend interfaces
@@ -42,13 +43,12 @@
 │   │       ├── Hero.tsx     # Hero banner, stats pills, CTA
 │   │       ├── HowItWorks.tsx # 4-step illustrated guide
 │   │       ├── WebsiteDirectory.tsx # Supported websites catalog & category filter
-│   │       ├── SubscribeView.tsx # Student subscription form & Telegram guide
+│   │       ├── SubscribeView.tsx # Student email subscription form
 │   │       ├── NoticesView.tsx # Searchable, paginated live notices feed
 │   │       ├── AdminDashboard.tsx # Password-protected admin suite & test tools
 │   │       ├── UnsubscribeView.tsx # 1-click unsubscribe handler
 │   │       └── Footer.tsx   # Bangladeshi student sentinel credits & links
-├── firebase-blueprint.json  # Firebase Firestore entity schema blueprint
-├── firestore.rules          # Hardened Firestore security rules
+├── .env.example             # Safe environment-variable template
 ├── server.ts                # Full-stack Express server (Vite middleware in dev)
 ├── package.json
 └── README.md
@@ -78,25 +78,19 @@
 
 ---
 
-### 2. How to Create a Telegram Bot with @BotFather
+### 2. Configure Tavily
 
-To send instant Telegram notifications to students:
+Create a Tavily API key and set it only in `.env` or your deployment environment:
 
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
-2. Send `/newbot` to start creating your bot.
-3. Choose a friendly name (e.g. `NoticeBondhu Alerts`).
-4. Choose a username ending in `bot` (e.g. `NoticeBondhu_bot`).
-5. Copy the generated **HTTP API Token** (e.g., `7123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`).
-6. Paste the token into your `.env` file:
-   ```env
-   TELEGRAM_BOT_TOKEN="7123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
-   ```
-7. To find your own Telegram Chat ID for testing:
-   - Search for [@userinfobot](https://t.me/userinfobot) on Telegram and send `/start`.
-   - Copy the numerical ID (e.g., `123456789`).
-   - Use this ID in the Admin Panel's **"Test Telegram Connection"** tool!
+```env
+TAVILY_API_KEY="tvly-your-key"
+TAVILY_EXTRACT_DEPTH="advanced"
+NOTICE_FAILURE_RETRY_MINUTES="5"
+```
 
----
+The key is sent as a Bearer token to `https://api.tavily.com/extract`. Each request targets the configured notice page, and extracted links are restricted to that source domain. The first successful run creates a baseline without emailing old notices; later runs save and alert only newly discovered URLs.
+
+Official Tavily API reference: https://docs.tavily.com/documentation/api-reference/endpoint/extract
 
 ### 3. How to Set Up Gmail SMTP App Password
 
@@ -121,19 +115,11 @@ To send beautiful HTML email notifications via Gmail:
 
 ---
 
-### 4. How to Connect Firebase Firestore
+### 4. Data Storage
 
-The project includes `firebase-blueprint.json` and `firestore.rules`.
-To connect live Firebase:
-1. Create a Firebase project in the [Firebase Console](https://console.firebase.google.com/).
-2. Create a Cloud Firestore database in Native mode.
-3. Add your Firebase credentials in `.env`:
-   ```env
-   FIREBASE_PROJECT_ID="your-project-id"
-   FIREBASE_CLIENT_EMAIL="firebase-adminsdk@your-project-id.iam.gserviceaccount.com"
-   FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-   ```
-4. By default, NoticeBondhu includes a self-healing persistent file store (`data/db.json`), making it work out-of-the-box in any cloud or local environment.
+NoticeBondhu currently stores state in `data/db.json`. The file is created automatically and is intentionally ignored by Git because it contains subscriber information and operational logs.
+
+For production, mount a persistent disk and point `NOTICEBONDHU_DATA_DIR` to it (the default is `./data`). Run a single application instance: ephemeral filesystems or multiple replicas can lose or overwrite state. A managed database adapter is required before horizontally scaling the service.
 
 ---
 
@@ -145,21 +131,26 @@ To connect live Firebase:
 3. Connect your repository.
 4. Set the following settings:
    - **Environment:** `Node`
-   - **Build Command:** `npm install && npm run build`
+   - **Build Command:** `npm ci && npm run build`
    - **Start Command:** `npm start`
 5. In **Environment Variables**, add:
    - `NODE_ENV=production`
    - `PORT=3000`
-   - `ADMIN_PASSWORD=your-secret-password`
-   - `TELEGRAM_BOT_TOKEN=...`
+   - `ADMIN_PASSWORD=your-long-unique-password`
+   - `ADMIN_SESSION_SECRET=at-least-32-random-characters`
+   - `TAVILY_API_KEY=...`
+   - `SMTP_HOST=smtp.gmail.com`
+   - `SMTP_PORT=587`
+   - `SMTP_SECURE=false`
    - `SMTP_USER=...`
    - `SMTP_PASS=...`
+   - `SMTP_FROM=NoticeBondhu Alerts <your-email@gmail.com>`
 6. Click **Deploy Web Service**!
 
 #### Option B: Deploy on Railway
 1. Go to [Railway.app](https://railway.app) and create a **New Project**.
 2. Select **Deploy from GitHub repo**.
-3. Under service settings, add your Environment Variables (`ADMIN_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `SMTP_USER`, `SMTP_PASS`).
+3. Under service settings, add your Environment Variables (`ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `TAVILY_API_KEY`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`).
 4. Railway will automatically detect Node.js, run `npm run build`, and execute `npm start`.
 
 ---
@@ -175,7 +166,7 @@ NoticeBondhu empowers any student or institution to add their college, universit
 - **SSRF Protection**: Strict host validation; loopback (`127.0.0.1`), link-local/cloud metadata (`169.254.169.254`), and private IPv4/IPv6 CIDR blocks are blocked.
 
 ### 2. User Submission & Auto-Subscription (`POST /api/websites/custom`)
-- **Auto-Subscription**: The submitting user's email (and optional Telegram Chat ID) is automatically subscribed to their new custom portal.
+- **Auto-Subscription**: The submitting user's email is automatically subscribed to their new custom portal.
 - **Duplicate Prevention**: If the normalized URL is already monitored, the system avoids creating duplicates and seamlessly subscribes the user to the existing portal.
 - **Baseline Run**: On the first check, existing notices are cataloged without sending spam alerts.
 - **Quota**: Max 5 custom websites per email.
@@ -191,7 +182,7 @@ NoticeBondhu empowers any student or institution to add their college, universit
 | `/api/websites/test` | POST | Public (Rate-limited) | Test & auto-detect notices from a URL |
 | `/api/websites/custom` | POST | Public (Rate-limited) | Add a custom website & auto-subscribe |
 | `/api/notices` | GET | Public | Search, filter, and paginate detected notices |
-| `/api/subscribe` | POST | Public | Subscribe to notice alerts via email & Telegram |
+| `/api/subscribe` | POST | Public | Subscribe to notice alerts via email |
 | `/api/unsubscribe` | POST | Public | 1-click unsubscribe from alerts |
 | `/api/stats` | GET | Public | Public monitor statistics |
 | `/api/admin/login` | POST | Public | Authenticate admin password |
@@ -205,8 +196,12 @@ NoticeBondhu empowers any student or institution to add their college, universit
 | `/api/admin/logs` | GET | Admin | View check logs and alert dispatch logs |
 | `/api/admin/subscribers` | GET | Admin | View subscriber list |
 
+Updating an existing subscription requires its `ownershipToken`. Unsubscribe requests require the secure token from the email link; an email address alone is never accepted as authorization.
+
 ---
 
-## 🛡 Default Admin Password
-- **Password:** `admin123` (configurable via `ADMIN_PASSWORD` in `.env`)
-- Navigate to the **Admin Dashboard** tab to add new websites, test selectors, trigger manual scrape checks, and view live logs.
+## 🛡 Admin Authentication
+
+- Set both `ADMIN_PASSWORD` and a random `ADMIN_SESSION_SECRET` of at least 32 characters. There is no default password.
+- Successful login creates a signed, `httpOnly`, `SameSite=Strict` session cookie; the password is never returned to the browser or stored in `localStorage`.
+- Navigate to the **Admin Dashboard** tab to manage websites, run checks, and view logs.

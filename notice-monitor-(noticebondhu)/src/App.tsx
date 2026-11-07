@@ -24,11 +24,11 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>('home');
   const [websites, setWebsites] = useState<WebsitePublic[]>([]);
   const [stats, setStats] = useState<SystemStats>({
-    totalSubscribers: 1,
-    totalNotices: 7,
-    totalWebsites: 5,
-    activeWebsites: 5,
-    totalAlertsSent: 2,
+    totalSubscribers: 0,
+    totalNotices: 0,
+    totalWebsites: 0,
+    activeWebsites: 0,
+    totalAlertsSent: 0,
     lastRunAt: null
   });
 
@@ -57,7 +57,10 @@ export default function App() {
       setCurrentPage(viewParam);
     }
     if (emailParam) setUnsubEmail(emailParam);
-    if (tokenParam) setUnsubToken(tokenParam);
+    if (tokenParam) {
+      setUnsubToken(tokenParam);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
 
   const fetchInitialData = async () => {

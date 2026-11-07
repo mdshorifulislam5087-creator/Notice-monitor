@@ -15,9 +15,10 @@ export interface Website {
   intervalMinutes: number; // 15, 60, 360
   enabled: boolean;
   isJsHeavy?: boolean;
+  fetchMode?: 'direct' | 'tavily';
+  tavilyExtractUrl?: string;
   isCustom?: boolean;
   creatorEmail?: string;
-  creatorTelegramChatId?: string;
   approvalStatus?: 'approved' | 'pending' | 'rejected';
   lastCheckedAt?: string;
   lastCheckStatus?: 'success' | 'failed' | 'pending';
@@ -47,7 +48,6 @@ export interface Subscriber {
   id: string;
   name: string;
   email: string;
-  telegramChatId?: string;
   isActive: boolean;
   createdAt: string;
   unsubToken: string;
@@ -64,11 +64,10 @@ export interface AlertLog {
   id: string;
   subscriberId: string;
   subscriberEmail: string;
-  telegramChatId?: string;
   noticeId: string;
   noticeTitle: string;
   websiteName: string;
-  channel: 'email' | 'telegram';
+  channel: 'email';
   status: 'sent' | 'simulated' | 'failed';
   error?: string;
   sentAt: string;

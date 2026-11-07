@@ -23,14 +23,14 @@ export const UnsubscribeView: React.FC<UnsubscribeViewProps> = ({
 }) => {
   const t = translations[lang];
 
-  const [emailOrToken, setEmailOrToken] = useState(initialEmail || initialToken);
+  const [unsubscribeToken, setUnsubscribeToken] = useState(initialToken);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleUnsubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailOrToken) return;
+    if (!unsubscribeToken) return;
 
     setIsSubmitting(true);
     setErrorMsg(null);
@@ -39,8 +39,7 @@ export const UnsubscribeView: React.FC<UnsubscribeViewProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: emailOrToken.includes('@') ? emailOrToken : undefined,
-          token: !emailOrToken.includes('@') ? emailOrToken : undefined
+          token: unsubscribeToken
         })
       });
       const data = await res.json();
@@ -105,9 +104,9 @@ export const UnsubscribeView: React.FC<UnsubscribeViewProps> = ({
           <input
             type="text"
             required
-            value={emailOrToken}
-            onChange={e => setEmailOrToken(e.target.value)}
-            placeholder="student@example.com"
+            value={unsubscribeToken}
+            onChange={e => setUnsubscribeToken(e.target.value)}
+            placeholder={initialEmail ? 'Use the secure token from your email link' : 'Unsubscribe token'}
             className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-sm"
           />
 

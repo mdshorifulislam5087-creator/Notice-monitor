@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Bell, Send, Mail, ArrowRight, ShieldCheck, Sparkles, CheckCircle2, Zap } from 'lucide-react';
+import { Bell, ArrowRight, ShieldCheck, Sparkles, CheckCircle2, Zap } from 'lucide-react';
 import { Language, PageView, SystemStats } from '../types.js';
 import { translations } from '../translations.js';
 
@@ -70,11 +70,7 @@ export const Hero: React.FC<HeroProps> = ({ lang, stats, setCurrentPage }) => {
           <div className="flex flex-wrap items-center justify-center gap-4 text-xs sm:text-sm text-slate-500 dark:text-slate-400">
             <span className="flex items-center gap-1.5 font-medium">
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-              {lang === 'bn' ? 'টেলিগ্রাম ইনস্ট্যান্ট পুশ' : 'Instant Telegram Alerts'}
-            </span>
-            <span className="flex items-center gap-1.5 font-medium">
-              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-              {lang === 'bn' ? 'ইমেইল পিডিএফ লিংক' : 'Email PDF Alerts'}
+              {lang === 'bn' ? 'তাৎক্ষণিক ইমেইল অ্যালার্ট' : 'Instant Email Alerts'}
             </span>
             <span className="flex items-center gap-1.5 font-medium">
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />

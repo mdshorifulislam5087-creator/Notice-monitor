@@ -6,7 +6,7 @@
 import React, { useState } from 'react';
 import {
   ExternalLink, Search, Clock, CheckCircle2, ShieldAlert, ArrowRight, Bell,
-  Plus, Sparkles, Check, ChevronDown, ChevronUp, AlertCircle, Send, Mail, Globe
+  Plus, Sparkles, Check, ChevronDown, ChevronUp, AlertCircle, Mail, Globe
 } from 'lucide-react';
 import { Language, WebsitePublic, PageView, WebsiteCategory } from '../types.js';
 import { translations } from '../translations.js';
@@ -44,7 +44,7 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
   const [category, setCategory] = useState<WebsiteCategory>('college');
   const [intervalMinutes, setIntervalMinutes] = useState<number>(60);
   const [email, setEmail] = useState('');
-  const [telegramChatId, setTelegramChatId] = useState('');
+  const [ownershipToken, setOwnershipToken] = useState('');
   const [isJsHeavy, setIsJsHeavy] = useState(false);
 
   // Manual selector & testing
@@ -186,7 +186,7 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
           category,
           intervalMinutes,
           email: email.trim(),
-          telegramChatId: telegramChatId.trim() || undefined,
+          ownershipToken: ownershipToken.trim() || undefined,
           selector: manualSelector.trim() || detectedSelector || undefined,
           isJsHeavy
         })
@@ -205,6 +205,7 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
         setNameBn('');
         setUrl('');
         setManualSelector('');
+        setOwnershipToken('');
         setDetectedSelector(null);
         setTestResult(null);
         if (onWebsiteAdded) onWebsiteAdded();
@@ -384,8 +385,8 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
             </h3>
             <p className="text-emerald-100 text-sm sm:text-base mb-6">
               {lang === 'bn'
-                ? 'এখনই আপনার পছন্দের প্রতিষ্ঠানগুলো সিলেক্ট করে ফ্রি টেলিগ্রাম ও ইমেইল নোটিফিকেশন সেট করুন।'
-                : 'Subscribe in 30 seconds for free push notifications directly to Telegram and Email.'}
+                ? 'এখনই আপনার পছন্দের প্রতিষ্ঠানগুলো সিলেক্ট করে ফ্রি ইমেইল নোটিফিকেশন সেট করুন।'
+                : 'Subscribe in 30 seconds for free email notifications.'}
             </p>
             <button
               onClick={() => setCurrentPage('subscribe')}
@@ -615,14 +616,14 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
                 </div>
               </div>
 
-              {/* User Subscription Info (Email + Telegram) */}
+              {/* User Subscription Info */}
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 space-y-3">
                 <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Bell className="w-4 h-4 text-emerald-600" />
                   <span>{lang === 'bn' ? 'অ্যালার্ট পাওয়ার জন্য আপনার তথ্য (স্বয়ংক্রিয় সাবস্ক্রিপশন)' : 'Your info for automated alerts'}</span>
                 </span>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
                       {t.subEmailLabel} *
@@ -637,18 +638,19 @@ export const WebsiteDirectory: React.FC<WebsiteDirectoryProps> = ({
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                      {t.subTelegramLabel}
-                    </label>
-                    <input
-                      type="text"
-                      value={telegramChatId}
-                      onChange={e => setTelegramChatId(e.target.value)}
-                      placeholder="123456789"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
-                    />
-                  </div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    {lang === 'bn' ? 'ম্যানেজমেন্ট টোকেন (আগের সাবস্ক্রিপশন আপডেট হলে)' : 'Management token (when updating an existing subscription)'}
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={ownershipToken}
+                    onChange={e => setOwnershipToken(e.target.value)}
+                    placeholder={lang === 'bn' ? 'স্বাগতম/অ্যালার্ট ইমেইলের টোকেন' : 'Token from your welcome/alert email'}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                  />
                 </div>
               </div>
 

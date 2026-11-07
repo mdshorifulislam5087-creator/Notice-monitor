@@ -18,7 +18,6 @@ export interface WebsitePublic {
   enabled: boolean;
   isJsHeavy?: boolean;
   isCustom?: boolean;
-  creatorEmail?: string;
   approvalStatus?: 'approved' | 'pending' | 'rejected';
   lastCheckedAt?: string;
   lastCheckStatus?: 'success' | 'failed' | 'pending';
@@ -27,6 +26,7 @@ export interface WebsitePublic {
 
 export interface WebsiteAdmin extends WebsitePublic {
   selector: string;
+  creatorEmail?: string;
   lastCheckError?: string;
   createdAt: string;
 }
@@ -67,10 +67,9 @@ export interface CheckLogItem {
 export interface AlertLogItem {
   id: string;
   subscriberEmail: string;
-  telegramChatId?: string;
   noticeTitle: string;
   websiteName: string;
-  channel: 'email' | 'telegram';
+  channel: 'email';
   status: 'sent' | 'simulated' | 'failed';
   error?: string;
   sentAt: string;
@@ -80,7 +79,6 @@ export interface SubscriberItem {
   id: string;
   name: string;
   email: string;
-  telegramChatId?: string;
   isActive: boolean;
   createdAt: string;
   subscribedWebsites: string[];

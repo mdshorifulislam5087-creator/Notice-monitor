@@ -6,18 +6,38 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { db } from './db.js';
 import { scraper } from './scraper.js';
+import { Website } from './types.js';
+
+export function isWebsiteDue(website: Website, now = Date.now()): boolean {
+  if (!website.lastCheckedAt) return true;
+  const lastTime = new Date(website.lastCheckedAt).getTime();
+  if (!Number.isFinite(lastTime)) return true;
+  const normalIntervalMinutes = Math.max(1, website.intervalMinutes || 60);
+  const configuredFailureRetry = Number(process.env.NOTICE_FAILURE_RETRY_MINUTES);
+  const failureRetryMinutes = Number.isFinite(configuredFailureRetry) && configuredFailureRetry > 0
+    ? configuredFailureRetry
+    : 5;
+  const intervalMinutes = website.lastCheckStatus === 'failed'
+    ? Math.min(normalIntervalMinutes, failureRetryMinutes)
+    : normalIntervalMinutes;
+  const intervalMs = intervalMinutes * 60 * 1000;
+  return now - lastTime >= intervalMs;
+}
 
 class SchedulerService {
   private cronTask: ScheduledTask | null = null;
   private isChecking = false;
 
   public start() {
+    if (this.cronTask) return;
     console.log('[Scheduler] Initializing automated notice monitoring cron job...');
 
     // Master scheduler runs every minute and inspects website intervals
     this.cronTask = cron.schedule('* * * * *', async () => {
       await this.runDueChecks();
     });
+
+    void this.runDueChecks();
 
     console.log('[Scheduler] Cron job active (checking intervals every minute).');
   }
@@ -44,20 +64,7 @@ class SchedulerService {
       const now = Date.now();
 
       for (const site of websites) {
-        let isDue = false;
-
-        if (!site.lastCheckedAt) {
-          // Never checked before -> due immediately
-          isDue = true;
-        } else {
-          const lastTime = new Date(site.lastCheckedAt).getTime();
-          const intervalMs = (site.intervalMinutes || 60) * 60 * 1000;
-          if (now - lastTime >= intervalMs) {
-            isDue = true;
-          }
-        }
-
-        if (isDue) {
+        if (isWebsiteDue(site, now)) {
           console.log(`[Scheduler] Checking due website: ${site.name} (Interval: ${site.intervalMinutes}m)`);
           await scraper.scrapeWebsite(site);
           // Polite rate-limiting pause
